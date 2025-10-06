@@ -1,57 +1,142 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
+import { supabase } from "../lib/supabaseClient";
+import { useAuth } from "../context/AuthContext";
 
 export default function useChat() {
-  const [messages, setMessages] = useState([
-    {
-      sender: "bot",
-      text: "👋 Hello! I’m Medcura Bot, your friendly healthcare assistant. How can I help you today?",
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    },
-  ]);
+  const { user } = useAuth();
+  const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  const send = async (query) => {
-    if (!query.trim()) return;
+  // 🧠 Load past chats when user logs in
+  useEffect(() => {
+    if (!user) return;
 
-    // Add user message
-    setMessages((prev) => [
-      ...prev,
-      { sender: "user", text: query, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) },
-    ]);
+    const fetchChats = async () => {
+      const { data, error } = await supabase
+        .from("chats")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: true });
+
+      if (error) {
+        console.error("❌ Error loading chats:", error);
+        return;
+      }
+
+      if (data.length > 0) {
+        setMessages(
+          data.map((msg) => ({
+            sender: msg.sender,
+            text: msg.message,
+            time: new Date(msg.created_at).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
+          }))
+        );
+      } else {
+        setMessages([
+          {
+            sender: "bot",
+            text: "👋 Hello! I’m Medcura Bot, your friendly healthcare assistant. How can I help you today?",
+            time: new Date().toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
+          },
+        ]);
+      }
+    };
+
+    fetchChats();
+
+    // 🧩 Real-time listener for new messages (bot + user)
+    const channel = supabase
+      .channel("realtime:chats")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "chats", filter: `user_id=eq.${user.id}` },
+        (payload) => {
+          const msg = payload.new;
+          setMessages((prev) => [
+            ...prev,
+            {
+              sender: msg.sender,
+              text: msg.message,
+              time: new Date(msg.created_at).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              }),
+            },
+          ]);
+        }
+      )
+      .subscribe();
+
+    // Cleanup on logout/unmount
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user]);
+
+  // ✉️ Send message + save to DB
+  const send = async (query) => {
+    if (!query.trim() || !user) return;
+
+    const newUserMessage = {
+      sender: "user",
+      text: query,
+      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    };
+    setMessages((prev) => [...prev, newUserMessage]);
     setLoading(true);
+
+    await supabase.from("chats").insert([
+      {
+        user_id: user.id,
+        message: query,
+        sender: "user",
+      },
+    ]);
 
     try {
       const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${import.meta.env.VITE_OPENROUTER_API_KEY}`
+          Authorization: `Bearer ${import.meta.env.VITE_OPENROUTER_API_KEY}`,
         },
         body: JSON.stringify({
-          model: "gpt-3.5-turbo", // or gpt-4
+          model: "gpt-3.5-turbo",
           messages: [
             { role: "system", content: "You are Medcura Bot, a helpful healthcare assistant." },
             ...messages.map((m) => ({
               role: m.sender === "user" ? "user" : "assistant",
               content: m.text,
             })),
-            { role: "user", content: query }
-          ]
-        })
+            { role: "user", content: query },
+          ],
+        }),
       });
 
       const data = await res.json();
       const reply = data.choices?.[0]?.message?.content || "⚠️ Sorry, I couldn’t connect. Try again later.";
 
-      setMessages((prev) => [
-        ...prev,
-        { sender: "bot", text: reply, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) },
+      await supabase.from("chats").insert([
+        {
+          user_id: user.id,
+          message: reply,
+          sender: "bot",
+        },
       ]);
     } catch (err) {
-      console.error("OpenRouter error:", err);
-      setMessages((prev) => [
-        ...prev,
-        { sender: "bot", text: "⚠️ Sorry, I couldn’t connect. Try again later.", time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) },
+      console.error("❌ OpenRouter error:", err);
+      await supabase.from("chats").insert([
+        {
+          user_id: user.id,
+          message: "⚠️ Sorry, I couldn’t connect. Try again later.",
+          sender: "bot",
+        },
       ]);
     } finally {
       setLoading(false);
