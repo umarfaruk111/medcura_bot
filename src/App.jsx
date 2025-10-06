@@ -1,19 +1,18 @@
-import React from "react";
-import { Routes, Route, Navigate } from "react-router-dom";
-import { useAuth } from "./context/AuthContext";
-import SignInPage from "./pages/SignInPage";
-import SignUpPage from "./pages/SignUpPage";
-import ChatPage from "./pages/ChatPage";
+import { createContext, useContext, useState } from "react";
 
-export default function App() {
-  const { user } = useAuth();
+const AuthContext = createContext();
+
+export const AuthProvider = ({ children }) => {
+  const [user, setUser] = useState(null);
+
+  const signIn = (email) => setUser({ email });
+  const signOut = () => setUser(null);
 
   return (
-    <Routes>
-      <Route path="/" element={user ? <Navigate to="/chat" /> : <Navigate to="/signin" />} />
-      <Route path="/signin" element={<SignInPage />} />
-      <Route path="/signup" element={<SignUpPage />} />
-      <Route path="/chat" element={user ? <ChatPage /> : <Navigate to="/signin" />} />
-    </Routes>
+    <AuthContext.Provider value={{ user, signIn, signOut }}>
+      {children}
+    </AuthContext.Provider>
   );
-}
+};
+
+export const useAuth = () => useContext(AuthContext);
